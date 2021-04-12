@@ -167,6 +167,77 @@ padded_data = np.lib.pad(
 # # Model
 
 
+class Global_attention_block(nn.Module):
+    def __init__(self):
+        super(Global_attention_block, self).__init__()
+        self.AvgPool2d = nn.AvgPool2d(kernel_size=(7,7))
+        self.conv1 = nn.Sequential(
+        nn.Conv2d(in_channels=24, out_channels=24, kernel_size=1),
+        nn.ReLU(inplace=True)
+        )
+        self.conv2 = nn.Sequential(
+        nn.Conv2d(in_channels=24, out_channels=24, kernel_size=1),
+        nn.Sigmoid()
+        )
+        self.sigmoid = nn.Sigmoid()
+        
+
+    def forward(self, inputs):
+        x = self.AvgPool2d(inputs)
+        x = self.conv1(x)
+        x = self.conv2(x)
+        C_A = torch.mul(x,inputs)
+#         print("Shape of C_A ",C_A.shape)
+        
+        x = torch.mean(C_A, -1, True)
+        x = self.sigmoid(x)
+#         print("Shape of x ",x.shape)
+        S_A = torch.mul(x,C_A)
+        
+        
+        return S_A
+    
+    
+class Category_attention_block(nn.Module):
+    def __init__(self,classes,k):
+        super(Category_attention_block, self).__init__()
+        self.conv = nn.Sequential(
+        nn.Conv2d(in_channels=24, out_channels=classes*k, kernel_size=1),
+        nn.BatchNorm2d(256),
+        nn.ReLU(inplace=True)
+        )
+        self.MaxPool2d = nn.MaxPool2d(kernel_size=(7,7))
+        
+        self.classes = classes
+        self.k = k
+        
+        
+
+    def forward(self, inputs):
+#         print("Shape of inputs ",inputs.shape)
+        F1 = self.conv(inputs)
+        x = self.MaxPool2d(F1)
+        x = x.view(x.size()[0],self.classes,self.k)
+#         print("Shape of x ",x.shape)
+        S = torch.mean(x, -1, False)
+        S = S.unsqueeze(1)
+        S = S.unsqueeze(2)
+#         print("Shape of S ",S.shape)
+        
+        x = F1.view(F1.size()[0],F1.size()[2],F1.size()[3],self.classes,self.k)
+#         print("Shape of x ",x.shape)
+        x = torch.mean(x, -1, False)
+#         print("Shape of x ",x.shape)
+        x = torch.mul(S,x)
+        M = torch.mean(x, -1, True)
+        M = M.view(M.size()[0],M.size()[3],M.size()[1],M.size()[2])
+#         print("Shape of M ",M.shape)
+        semantic = torch.mul(inputs,M)
+        
+        
+        return semantic
+
+
 class Residual(nn.Module):  # pytorch
     def __init__(self,
                  in_channels,
@@ -247,9 +318,13 @@ class SSRN_network(nn.Module):
         self.avg_pooling = nn.AvgPool3d(kernel_size=(5, 5, 1))
         self.full_connection = nn.Sequential(
             nn.Dropout(p=0.5),
-            nn.Linear(24, classes)  # ,
+            nn.Linear(1176, 512),
+            nn.Linear(512, classes)
             # nn.Softmax()
         )
+        self.GAB = Global_attention_block()
+        self.CAB = Category_attention_block(16,16)
+        self.avg_pooling1 = nn.AvgPool2d(kernel_size=(5, 5))
 
     def forward(self, X):
         x1 = self.batch_norm1(self.conv1(X))
@@ -263,9 +338,13 @@ class SSRN_network(nn.Module):
 
         x3 = self.res_net3(x2)
         x3 = self.res_net4(x3)
-        x4 = self.avg_pooling(x3)
+        x3 = x3.view(x3.size()[0],x3.size()[1]*x3.size()[4],x3.size()[2],x3.size()[3])
+        x3 = self.GAB(x3)
+        x4 = self.CAB(x3)
+#         x4 = self.avg_pooling1(x3)
         x4 = x4.view(x4.size(0), -1)
         return self.full_connection(x4)
+
 
 
 model = SSRN_network(BAND, CLASSES_NUM).cuda()
